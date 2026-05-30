@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>台北市及時雨量監測</title>
+    <!-- 修正：加入函式庫載入連結 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.10.0/p5.min.js"></script>
+    <script src="https://unpkg.com/mappa-mundi/dist/mappa.js" type="text/javascript"></script>
+    <style>
+        html, body {
+            height: 100%;
+            font-family: "Microsoft JhengHei", Arial, sans-serif;
+            background-color: #f0f4f8;
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+        }
+        .container {
+            display: flex;
+            flex: 1;
+            width: 100%;
+            overflow: hidden;
+        }
+        header {
+            background: #fff;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 20px;
+            border-bottom: 1px solid #ddd;
+            z-index: 10;
+        }
+        h1 { margin: 0; color: #2c3e50; font-size: 1.5rem; }
+        button {
+            padding: 8px 16px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        button:hover { background-color: #0056b3; }
+        #left-panel {
+            width: 300px;
+            background: #fff;
+            overflow-y: auto;
+            border-right: 1px solid #ddd;
+            padding: 15px;
+        }
+        #map-container {
+            flex: 1;
+            position: relative;
+            background: #e5e3df;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            padding: 8px;
+            text-align: left;
+            border-bottom: 1px solid #eee;
+            font-size: 0.9rem;
+        }
+        th { background-color: #f8f9fa; }
+        .loading { color: #666; text-align: center; padding: 20px; }
+        .error { color: #d9534f; text-align: center; padding: 20px; }
+        
+        /* 依照雨量等級定義不同的閃爍動畫 */
+        @keyframes flash-blue   { 50% { background-color: #cce5ff; } }
+        @keyframes flash-green  { 50% { background-color: #d4edda; } }
+        @keyframes flash-yellow { 50% { background-color: #fff3cd; } }
+        @keyframes flash-red    { 50% { background-color: #f8d7da; } }
+        @keyframes flash-purple { 50% { background-color: #e2d9f3; } }
+
+        .flash-blue   { animation: flash-blue 1s infinite; font-weight: bold; }
+        .flash-green  { animation: flash-green 1s infinite; font-weight: bold; }
+        .flash-yellow { animation: flash-yellow 1s infinite; font-weight: bold; }
+        .flash-red    { animation: flash-red 1s infinite; font-weight: bold; }
+        .flash-purple { animation: flash-purple 1s infinite; font-weight: bold; }
+
+        /* 修正：將圖例恢復為底部橫欄，並移除外距以消除灰色空隙 */
+        #legend {
+            background-color: #fff;
+            display: flex;
+            flex-direction: row;
+            justify-content: center;
+            align-items: center;
+            padding: 10px;
+            border-top: 1px solid #ddd;
+            z-index: 10;
+            gap: 20px;
+            font-size: 0.9rem;
+            color: #444;
+        }
+        .legend-item { display: flex; align-items: center; }
+        .color-box {
+            width: 18px;
+            height: 18px;
+            margin-right: 8px;
+            border-radius: 4px;
+            border: 1px solid rgba(0,0,0,0.1);
+        }
+    </style>
+  </head>
+  <body>
+    <header>
+        <h1>台北市即時雨量觀測</h1>
+        <span style="font-size: 0.8rem; color: #666;">(滑鼠移至地圖圓點可查看站名並連動列表)</span>
+        <div style="display: flex; align-items: center;">
+            <span id="last-update" style="font-size: 0.8rem; color: #666; margin-right: 10px;"></span>
+            <button onclick="fetchRainData()">更新資料</button>
+        </div>
+    </header>
+    <div class="container">
+        <div id="left-panel" onmouseleave="clearHoverEffect()">
+            <div class="loading">正在讀取最新雨量資料...</div>
+        </div>
+        <div id="map-container"></div>
+    </div>
+    <!-- 修正：將圖例移回主容器下方，作為獨立的底欄 -->
+    <div id="legend">
+        <div class="legend-item"><span class="color-box" style="background-color: #007bff;"></span> 0-80mm 正常/無雨</div>
+        <div class="legend-item"><span class="color-box" style="background-color: #28a745;"></span> 81-200mm 大雨</div>
+        <div class="legend-item"><span class="color-box" style="background-color: #ffc107;"></span> 201-350mm 豪雨</div>
+        <div class="legend-item"><span class="color-box" style="background-color: #dc3545;"></span> 351-500mm 大豪雨</div>
+        <div class="legend-item"><span class="color-box" style="background-color: #6f42c1;"></span> 501mm+ 超大豪雨</div>
+    </div>
+
+    <script>
+    // 根據雨量決定顏色與 CSS Class
+    function getRainLevelData(r) {
+      if (r <= 80)  return { color: [0, 123, 255],   cssClass: 'flash-blue' };   // 藍色
+      if (r <= 200) return { color: [40, 167, 69],   cssClass: 'flash-green' };  // 綠色
+      if (r <= 350) return { color: [255, 193, 7],   cssClass: 'flash-yellow' }; // 黃色
+      if (r <= 500) return { color: [220, 53, 69],   cssClass: 'flash-red' };    // 紅色
+      return               { color: [111, 66, 193],  cssClass: 'flash-purple' }; // 紫色
+    }
+
+    // 台北市主要測站經緯度座標對照表 (用於地圖定位)
+    const stationCoords = {
+      "湖田國小": { lat: 25.1528, lon: 121.5323 },
+      "大屯國小": { lat: 25.1741, lon: 121.4925 },
+      "桃源國中": { lat: 25.1397, lon: 121.4914 },
+      "北投國小": { lat: 25.1321, lon: 121.5005 },
+      "陽明高中": { lat: 25.0945, lon: 121.5148 },
+      "太平國小": { lat: 25.0610, lon: 121.5111 },
+      "民生國中": { lat: 25.0602, lon: 121.5606 },
+      "中正國中": { lat: 25.0336, lon: 121.5201 },
+      "三興國小": { lat: 25.0303, lon: 121.5583 },
+      "格致國中": { lat: 25.1362, lon: 121.5387 },
+      "平等國小": { lat: 25.1278, lon: 121.5714 },
+      "至善國中": { lat: 25.1014, lon: 121.5489 },
+      "碧湖國小": { lat: 25.0811, lon: 121.5878 },
+      "東湖國小": { lat: 25.0689, lon: 121.6169 },
+      "瑠公國中": { lat: 25.0372, lon: 121.5847 },
+      "舊莊國小": { lat: 25.0402, lon: 121.6186 },
+      "博嘉國小": { lat: 25.0000, lon: 121.5886 },
+      "北政國中": { lat: 24.9861, lon: 121.5786 },
+      "長安國小": { lat: 25.0489, lon: 121.5283 },
+      "萬華國中": { lat: 25.0278, lon: 121.4986 },
+      "台灣大學(新)": { lat: 25.0175, lon: 121.5397 },
+      "雙園": { lat: 25.0232, lon: 121.4925 },
+      "中洲": { lat: 25.1235, lon: 121.4608 }
+    };
+
+    let rainData = [];
+    let myMap;
+    let canvas;
+    let hoveredIndex = -1; // 紀錄當前懸停的測站索引
+    const mappa = new Mappa('Leaflet');
+    const options = {
+      lat: 25.0445,
+      lng: 121.509,
+      zoom: 12,
+      style: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+    };
+
+    function setup() {
+      // 將畫布放在右側容器中
+      const mapDiv = document.getElementById('map-container');
+      
+      // 修正畫布大小計算
+      canvas = createCanvas(mapDiv.clientWidth, mapDiv.clientHeight);
+      canvas.parent('map-container');
+
+      // 初始化地圖
+      myMap = mappa.tileMap(options);
+      myMap.overlay(canvas);
+      
+      fetchRainData();
+    }
+
+    async function fetchRainData() {
+      const content = document.getElementById('left-panel');
+
+      // 安全檢查：提醒使用者不要直接從檔案開啟
+      if (window.location.protocol === 'file:') {
+        content.innerHTML = '<div class="error">偵測到您直接從檔案開啟 (file://)。<br>請使用本機伺服器 (如 VS Code Live Server 或 127.0.0.1) 執行，資料才能正確抓取。</div>';
+        return;
+      }
+
+      // 台北市雨量 API 網址
+      const apiUrl = 'https://wic.gov.taipei/OpenData/API/Rain/Get?stationNo=&loginId=open_rain&dataKey=85452C1D';
+      // 使用 corsproxy.io 代理伺服器解決 127.0.0.1 的跨網域限制
+      const timestamp = new Date().getTime();
+      const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(apiUrl + '&t=' + timestamp)}`;
+
+      content.innerHTML = '<div class="loading">正在嘗試抓取最新雨量資料...</div>';
+
+      try {
+        const response = await fetch(proxyUrl);
+        if (!response.ok) throw new Error(`代理伺服器回應異常: ${response.status}`);
+
+        const result = await response.json();
+        console.log('API 回傳原始資料:', result); // 除錯用
+
+        // 兼容多種回傳格式：直接為陣列，或包在 Data / data 屬性中
+        let data = null;
+        if (Array.isArray(result)) {
+          data = result;
+        } else if (result && Array.isArray(result.Data)) {
+          data = result.Data;
+        } else if (result && Array.isArray(result.data)) {
+          data = result.data;
+        } else if (result && result.Success === false) {
+          throw new Error(result.Msg || 'API 授權金鑰可能已失效');
+        }
+
+        if (!data) throw new Error('回傳的資料格式不符');
+        
+        rainData = data;
+        if (data.length === 0) {
+          content.innerHTML = '<div class="error">目前沒有可用的觀測資料。</div>';
+          return;
+        }
+
+        let tableHtml = `
+          <table>
+            <thead>
+              <tr>
+                <th>測站名稱</th>
+                <th>1小時雨量 (mm)</th>
+              </tr>
+            </thead>
+            <tbody>
+        `;
+
+        data.forEach((item, index) => {
+          const stationName = item.StationName || item.stationName || item.st_name || item.Station || '未知';
+          const rainfall = parseFloat(item.Rainfall1hr ?? item.rainfall1hr ?? item.now ?? 0);
+
+          tableHtml += `
+            <tr id="row-${index}">
+              <td><strong>${stationName}</strong></td>
+              <td style="color: ${rainfall > 0 ? '#d9534f' : 'inherit'}; font-weight: ${rainfall > 0 ? 'bold' : 'normal'}">
+                ${rainfall}
+              </td>
+            </tr>`;
+        });
+
+        tableHtml += '</tbody></table>';
+        content.innerHTML = tableHtml;
+
+        // 更新最近更新時間
+        document.getElementById('last-update').innerText = `最後更新：${new Date().toLocaleTimeString()}`;
+      } catch (err) {
+        console.error('Fetch error:', err);
+        content.innerHTML = `<div class="error">抓取失敗：${err.message}</div>`;
+      }
+    }
+
+    function draw() {
+      clear();
+      let newHoveredIndex = -1;
+      const radius = 5; // 圓點半徑
+
+      if (rainData && rainData.length > 0) {
+        for (let i = 0; i < rainData.length; i++) {
+          let item = rainData[i];
+          const name = item.StationName || item.stationName || item.st_name || item.Station || '未知';
+          const rainfall = parseFloat(item.Rainfall1hr ?? item.rainfall1hr ?? item.now ?? 0);
+          const level = getRainLevelData(rainfall);
+          
+          // 優先從 API 抓座標，若無則從 stationCoords 補足
+          let lat = parseFloat(item.Latitude || item.lat);
+          let lon = parseFloat(item.Longitude || item.lon);
+          
+          if (isNaN(lat) || isNaN(lon)) {
+            if (stationCoords[name]) {
+              lat = stationCoords[name].lat;
+              lon = stationCoords[name].lon;
+            }
+          }
+
+          if (lat && lon) {
+            const pos = myMap.latLngToPixel(lat, lon);
+            
+            // 檢查滑鼠是否在圓點上 (判定範圍設為 8px 增加感應靈敏度)
+            if (dist(mouseX, mouseY, pos.x, pos.y) < 8) {
+              newHoveredIndex = i;
+              fill(level.color[0], level.color[1], level.color[2], 255); // 懸停時完全不透明
+            } else {
+              fill(level.color[0], level.color[1], level.color[2], 180); // 平時半透明
+            }
+
+            stroke(255);
+            strokeWeight(1);
+            ellipse(pos.x, pos.y, radius * 2, radius * 2);
+          }
+        }
+      }
+
+      updateHoverState(newHoveredIndex);
+    }
+
+    function updateHoverState(newIndex) {
+      if (newIndex !== -1) {
+        const item = rainData[newIndex];
+        const rainfall = parseFloat(item.Rainfall1hr ?? item.rainfall1hr ?? item.now ?? 0);
+        const level = getRainLevelData(rainfall);
+        const name = item.StationName || item.stationName || item.st_name || item.Station || '未知';
+        
+        let lat = parseFloat(item.Latitude || item.lat) || stationCoords[name]?.lat;
+        let lon = parseFloat(item.Longitude || item.lon) || stationCoords[name]?.lon;
+        
+        const pos = myMap.latLngToPixel(lat, lon);
+
+        // 1. 在地圖上圓點旁顯示站名
+        fill(0);
+        noStroke();
+        textSize(12);
+        textAlign(LEFT, CENTER);
+        text(name, pos.x + 12, pos.y);
+
+        // 2. 如果懸停對象改變，更新左側列表樣式
+        if (newIndex !== hoveredIndex) {
+          clearHoverEffect();
+          const row = document.getElementById(`row-${newIndex}`);
+          if (row) {
+            row.classList.add(level.cssClass);
+            row.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          }
+          hoveredIndex = newIndex;
+        }
+      } else {
+        clearHoverEffect();
+      }
+    }
+
+    function clearHoverEffect() {
+      if (hoveredIndex !== -1) {
+        const row = document.getElementById(`row-${hoveredIndex}`);
+        if (row) row.classList.remove('flash-blue', 'flash-green', 'flash-yellow', 'flash-red', 'flash-purple');
+        hoveredIndex = -1;
+      }
+    }
+
+    function windowResized() {
+      const mapDiv = document.getElementById('map-container');
+      resizeCanvas(mapDiv.clientWidth, mapDiv.clientHeight);
+    }
+    </script>
+  </body>
+</html>
